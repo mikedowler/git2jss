@@ -107,9 +107,6 @@ class JamfObject(object):
         folder (str): Name of the folder containing the script and XML files
         xml_file (pathlib.Path): XML file defined by the subclass's
             ``filename`` class attribute
-        new_url (str): url for creating a new object in the JSS defined by
-            parsing a new url using ``urllib.parse.urljoin`` to join the
-            ``JPS_URL`` global with the subclass's ``resource`` class atribute.
         name (str): If the XML file contains the ``<name>`` tag, then this name
             is used when GET or PUT are performed in the JSS. Otherwise,
             ``folder.name`` is used as a fallback.
@@ -140,8 +137,6 @@ class JamfObject(object):
         """
         self.folder = FILE_PATH.joinpath(self.source, folder)
         self.xml_file = self.folder.joinpath(self.filename + ".xml")
-        self.new_url = urlparse.urljoin(
-            JPS_URL, f"/JSSResource/{self.resource}/id/0")
         self.name = None
         self.xml = None
         self.data = None
@@ -158,14 +153,13 @@ class JamfObject(object):
         Returns:
             None: if ``name`` is not defined
             str: returns a str parsed by ``urllib.parse.urljoin`` combining
-                the ``JPS_URL`` global and the subclass' ``resource`` class
+                the ``subclass' ``base_url`` class
                 attribute, and the discovered ``name`` attribute.
 
         """
         if not self.name:
             return None
-        return urlparse.urljoin(
-            JPS_URL, f"/JSSResource/{self.resource}/name/{self.name}")
+        return urlparse.urljoin(self.class_url, f"/name/{self.name}")
 
     async def get(self, session, semaphore):
         """Gets the information needed to upload an object to the JSS either
@@ -362,21 +356,24 @@ class ExtensionAttribute(JamfObject):
             attribute in JamfObject
         filename (str): String used for building multiple pathlib.Path objects
             to files such as the XML file and script file.
-        resource (str): Used by JamfObject after "JSSResource" to define the
-            ``new_url`` attribute and the ``resource_url`` method to build
-            the URL for the object in the JSS.
         data_xpath (str): Used by JamfObject to define where to write the
             ``data`` attribute (script) string to the XML prior to PUT.
         template (pathlib.Path): Path to the template in case the XML file is
             missing or the object does not yet exist in the JSS.
+        class_url (str): Used when retrieving all objects of this class from the JSS
+            and also used by JamfObject to define the ``resource_url`` method to 
+            build the URL for the object in the JSS.
+        new_url (str): url for creating a new object in the JSS defined by
+            parsing a new url using ``urllib.parse.urljoin`` to extend the class_url
 
     """
     class_name = "Extension Attribute"
     source = "extension_attributes"
     filename = "ea"
-    resource = "computerextensionattributes"
     data_xpath = "input_type/script"
     template = FILE_PATH.joinpath("templates/ea.xml")
+    class_url = urlparse.urljoin(JPS_URL, f"/JSSResource/computerextensionattributes")
+    new_url = urlparse.urljoin(class_url, f"/id/0")
 
     def __init__(self, folder, *args, **kwargs):
         """Initialization of an ``ExtensionAttribute`` object
@@ -420,9 +417,10 @@ class Script(JamfObject):
     class_name = "Script"
     source = "scripts"
     filename = "script"
-    resource = "scripts"
     data_xpath = "script_contents"
     template = FILE_PATH.joinpath("templates/script.xml")
+    class_url = urlparse.urljoin(JPS_URL, f"/JSSResource/scripts")
+    new_url = urlparse.urljoin(class_url, f"/id/0")
 
     def __init__(self, folder, *args, **kwargs):
         """Initialization of a ``Script`` object
