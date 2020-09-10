@@ -232,6 +232,34 @@ class JamfObject(object):
         LOG.error("Uploading %s %s Failed!", self.class_name, self.id or self.name)
         return False
 
+    async def delete(self, session, semaphore):
+        """DELETEs the information from the JSS.
+
+        Args:
+            session (aiohttp.ClientSession): an active session to eventually
+                pass to the ``delete_resource`` function if needed.
+            semaphore (asyncio.BoundedSempahore): a Semaphore to prevent the
+                script from establishing too many connections to the JSS.
+
+        Returns:
+            bool: True if the DELETE succeeds, False if it does not.
+
+        """
+        delete_response = None
+        for attempt in range(1, RE_TRIES):
+            try:
+                delete_response = await delete_resource(
+                    self.resource_url(), session, semaphore)
+                break
+            except asyncio.exceptions.TimeoutError:
+                LOG.error("%s: Upload timed out. This is attempt %d of %d",
+                          self.name, attempt, RE_TRIES)
+        if delete_response in (201, 200):
+            LOG.info("Deleted %s: %s", self.class_name, self.name)
+            return True
+        LOG.error("Deleting %s %s Failed!", self.class_name, self.name)
+        return False
+
     async def get_xml(self, session, semaphore):
         """Called by the ``get`` method if the XML file is missing from
         ``folder``. Here is where the ``name`` is inferred from
@@ -317,7 +345,6 @@ class JamfObject(object):
                 "Update XML file: '%s' to stop seeing this message.",
                 self.name, _category.text, str(self.xml_file))
             _category.text = "None"
-
 
     async def get_data(self):
         """Globs the ``folder`` looking for files with extensions defined in
@@ -540,6 +567,30 @@ async def put_resource(xml_element, url, new_url, session, semaphore):
     LOG.debug("URL: %s Final PUT status: %s", url, resp.status)
     return resp.status
 
+
+async def delete_resource(url, session, semaphore):
+    """DELETE using the ``asyncio.ClientSession`` and return success.
+
+    Significantly reduces the amount of repeated code by making all DELETE calls
+    come through one function, irrespective of need. Returns the HTTP response
+    status code for further processing.
+
+    Args:
+        url (str): Full URL of the resource in the JSS
+        session (aiohttp.ClientSession): an active session object
+        semaphore (asyncio.BoundedSempahore): a Semaphore to prevent the
+            script from establishing too many connections to the JSS.
+
+    Returns:
+        response.status (int): Returns the response status (200, 409, etc.)
+
+    """
+    async with semaphore:
+        with async_timeout.timeout(TIME_OUT):
+            async with session.delete(url, auth=S_AUTH, headers=S_HEAD) as resp:
+                await resp.status
+    LOG.debug("URL: %s DELETE status: %s", url, resp.status)
+    return resp.status
 
 async def parse_xml(_path):
     """Parses an XML file and returns the root object.
