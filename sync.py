@@ -122,7 +122,7 @@ class JamfObject(object):
             ``pathlib.Path.suffix`` defined in ``SUPPORTED_EXTENSIONS``.
 
     """
-    def __init__(self, folder, *args, **kwargs):
+    def __init__(self, id = 0, name = None, folder = None, *args, **kwargs):
         """Initialization of a JamfObject object
 
         Nothing much happens at initialization. No IO is used in order to not
@@ -135,9 +135,10 @@ class JamfObject(object):
                 each subclass object.
 
         """
-        self.folder = FILE_PATH.joinpath(self.source, folder)
-        self.xml_file = self.folder.joinpath(self.filename + ".xml")
-        self.name = None
+        self.id = id
+        self.name = name
+        folder = name if not folder and name
+        self.folder = FILE_PATH.joinpath(self.source, folder) if folder else None
         self.xml = None
         self.data = None
 
@@ -151,15 +152,18 @@ class JamfObject(object):
             None
 
         Returns:
-            None: if ``name`` is not defined
             str: returns a str parsed by ``urllib.parse.urljoin`` combining
                 the ``subclass' ``base_url`` class
-                attribute, and the discovered ``name`` attribute.
+                attribute, and the discovered ``id`` or ``name`` attribute.
+            None: if neither ``id`` nor ``name`` is defined
 
         """
-        if not self.name:
+        if self.id:
+            return urlparse.urljoin(self.class_url, f"/id/{self.id}")
+        elif self.name:
+            return urlparse.urljoin(self.class_url, f"/name/{self.name}")
+        else:
             return None
-        return urlparse.urljoin(self.class_url, f"/name/{self.name}")
 
     async def get(self, session, semaphore):
         """Gets the information needed to upload an object to the JSS either
@@ -178,16 +182,21 @@ class JamfObject(object):
 
         """
         if not self.xml:
-            if not self.xml_file.exists():
-                self.xml = await self.get_xml(session, semaphore)
-            else:
+            self.xml_file = self.folder.joinpath(self.filename + ".xml") if folder else None
+            
+            if self.xml_file and self.xml_file.exists():
                 LOG.debug("Reading in XML file: %s", self.xml_file)
                 self.xml = await parse_xml(self.xml_file)
-                # Make sure we have the actual name from the XML
+                # Make sure we have the actual name and id from the XML
                 # rather than using the folder name.
                 self.name = self.xml.find("name").text
-            await self.cleanup_xml()
-            LOG.debug("XML Contents: %s", make_pretty_xml(self.xml))
+                self.id = self.xml.find("id").text
+            else:
+                self.xml = await self.get_xml(session, semaphore)
+
+            if self.xml:
+                await self.cleanup_xml()
+                LOG.debug("XML Contents: %s", make_pretty_xml(self.xml))
         if not self.data:
             if not await self.get_data():
                 LOG.error("No script file found in %s", self.folder)
@@ -218,16 +227,16 @@ class JamfObject(object):
                 LOG.error("%s: Upload timed out. This is attempt %d of %d",
                           self.name, attempt, RE_TRIES)
         if put_response in (201, 200):
-            LOG.info("Uploaded %s: %s", self.class_name, self.name)
+            LOG.info("Uploaded %s: %s", self.class_name, self.id or self.name)
             return True
-        LOG.error("Uploading %s %s Failed!", self.class_name, self.name)
+        LOG.error("Uploading %s %s Failed!", self.class_name, self.id or self.name)
         return False
 
     async def get_xml(self, session, semaphore):
         """Called by the ``get`` method if the XML file is missing from
         ``folder``. Here is where the ``name`` is inferred from
-        ``pathlib.Path.name``. This is not an ideal scenario, so warnings are
-        issued. Then an attempt is made to GET from the JSS. If this fails,
+        ``pathlib.Path.name`` if necessary. This is not an ideal scenario, so warnings
+        are issued. Then an attempt is made to GET from the JSS. If this fails,
         the XML template file defined in the subclass is used instead.
 
         Args:
@@ -241,9 +250,10 @@ class JamfObject(object):
                 GET results from the JSS or the template file contents.
 
         """
-        LOG.warning("%s: Inferring name from folder.", self.folder.name)
-        self.name = self.folder.name
-        LOG.warning("%s: XML Missing. Attempting GET from JSS.", self.name)
+        if not self.name and self.folder:
+            LOG.warning("%s: Inferring name from folder.", self.folder.name)
+            self.name = self.folder.name
+        LOG.warning("%s: XML Missing. Attempting GET from JSS.", self.id or self.name)
         # Get XML object from the JPS
         _template = await get_resource(self.resource_url(), session, semaphore)
         if not _template:
@@ -279,8 +289,6 @@ class JamfObject(object):
             self.xml.find("name").text = self.folder.name
         if self.xml.find(self.data_xpath) is not None:
             self.xml.find(self.data_xpath).clear()
-        if self.xml.find("id") is not None:
-            self.xml.remove(self.xml.find("id"))
         if self.xml.find("filename") is not None:
             self.xml.remove(self.xml.find("filename"))
 
@@ -778,14 +786,14 @@ async def main():
     # Create the base objects for each type of upload.
     # Future: Make JamfObject a Factory to automate this.
     extension_attributes = sorted([
-        ExtensionAttribute(ea.name)
-        for ea in await find_subdirs("extension_attributes")
-        if ea.name in CHANGED_EXT_ATTRS or ARGS.update_all],
+        ExtensionAttribute(folder = ea_folder.name)
+        for ea_folder in await find_subdirs("extension_attributes")
+        if ea_folder.name in CHANGED_EXT_ATTRS or ARGS.update_all],
         key=lambda ea: ea.folder)
     scripts = sorted([
-        Script(sc.name)
-        for sc in await find_subdirs("scripts")
-        if sc.name in CHANGED_SCRIPTS or ARGS.update_all],
+        Script(folder = sc_folder.name)
+        for sc_folder in await find_subdirs("scripts")
+        if sc_folder.name in CHANGED_SCRIPTS or ARGS.update_all],
         key=lambda sc: sc.folder)
     all_items = extension_attributes + scripts
     # Start processing objects.
